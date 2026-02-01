@@ -126,3 +126,116 @@ resource "aws_iam_role_policy_attachment" "ecr_read_only" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
   role       = aws_iam_role.eks_node_role.name
 }
+
+data "aws_caller_identity" "current" {}
+
+# 1. The Role that users will "put on" to access the cluster
+resource "aws_iam_role" "eks_developer_role" {
+  name = "eks-developer-access-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+      }
+    ]
+  })
+}
+
+# 1. Create the IAM Role
+resource "aws_iam_role" "eks_edit_role" {
+  name = "eks-cluster-editor-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          # Allow your AWS account root (so IAM users can assume this role)
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+      }
+    ]
+  })
+}
+
+# 2. Create the Access Entry (Maps the IAM Role to EKS)
+resource "aws_eks_access_entry" "editor_access" {
+  cluster_name      = "my-private-cluster-sg"
+  principal_arn     = aws_iam_role.eks_edit_role.arn
+  kubernetes_groups = ["my-edit-group"] # Optional: Map to custom K8s groups
+  type              = "STANDARD"
+}
+
+# 3. Attach the "Edit" Policy
+resource "aws_eks_access_policy_association" "editor_policy" {
+  cluster_name  = "my-private-cluster-sg"
+  principal_arn = aws_iam_role.eks_edit_role.arn
+  
+  # This specific ARN grants the "Edit" ClusterRole
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
+
+  access_scope {
+    type = "cluster" # Grants edit access to ALL namespaces
+    # To limit to specific namespaces, use:
+    # type       = "namespace"
+    # namespaces = ["backend", "frontend"] 
+  }
+}
+
+# 2. Grant the IAM Group permission to assume the specific role
+resource "aws_iam_group_policy" "developer_assume_role" {
+  name  = "allow-assume-eks-role"
+  group = "eks-viewer" # Replace with your group name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "sts:AssumeRole"
+        Resource = aws_iam_role.eks_developer_role.arn
+      }
+    ]
+  })
+}
+resource "aws_iam_group_policy" "developer_assume_edit_role" {
+  name  = "allow-assume-eks-role"
+  group = "eks-editor" # Replace with your group name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "sts:AssumeRole"
+        Resource = aws_iam_role.eks_edit_role.arn
+      }
+    ]
+  })
+}
+# 3. Create the Access Entry for the Role
+resource "aws_eks_access_entry" "developer_access" {
+  cluster_name      = "my-private-cluster-sg"
+  principal_arn     = aws_iam_role.eks_developer_role.arn
+  kubernetes_groups = ["my-viewer-group"] # Optional: Map to custom K8s groups
+  type              = "STANDARD"
+}
+
+# 4. Attach a Policy (e.g., Admin or View access)
+resource "aws_eks_access_policy_association" "developer_policy" {
+  cluster_name  = "my-private-cluster-sg"
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
+  principal_arn = aws_iam_role.eks_developer_role.arn
+
+  access_scope {
+    type       = "cluster"
+  }
+}
